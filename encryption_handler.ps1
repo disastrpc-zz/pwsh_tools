@@ -1,4 +1,8 @@
 # Bitlocker Remote Handler
+# By Jared Freed
+# This tool uses PsExec and Dell Command and Configure to perform various operations on remote systems 
+# involving TPM activation and Bitlocker encryption.
+# Source code: https://github.com/disastrpc/encryption_tools/
 
 # Takes params from the script invocation
 param([string]$target,
