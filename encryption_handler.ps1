@@ -40,30 +40,38 @@ class Helper
 # Class contains methods that allow the SessionHandler object to connect to remote systems
 class SessionHandler
 {
-
-    [string]$target
-    [string]$target_path
-    [string]$ipv4
-    [string]$hostname
-    [string]$model
-    [string]$psexec
-    [string]$installfiles
-    [string]$install_filename
-    [bool]$encryption_status
-    [bool]$tpm_on
-    [bool]$tpm_status
+    [string] $target
+    [string] $target_path
+    [string] $ipv4
+    [string] $hostname
+    [string] $model
+    [string] $psexec
+    [string] $installfiles
+    [string] $install_filename
+    [bool] $encryption_status
+    [bool] $tpm_on
+    [bool] $tpm_status
 
     [Helper]$global:helper = [Helper]::new()
 
     # Constructor attempts to gather information about the target on creation, this means that each SessionHandler object will already know everything it needs before starting operations.
-    SessionHandler([string]$target, [string]$psexec, [string]$installfiles)
+    SessionHandler([string] $target, [string] $psexec, [string] $installfiles)
     {
         [string] $this.target = $target
         [string] $this.psexec = $psexec
         [string] $this.installfiles = $installfiles
-        [string]$this.install_filename = Split-Path $this.installationpath -leaf
+        [string] $this.install_filename = Split-Path $this.installfiles -leaf
 
         [console]::WriteLine([string]::Format("{0} Gathering information for {1}...", $(Timestamp), $this.target))
+
+        # if unable to connect throw connection error to be caught by the Main function
+        if( ! (Test-Connection $this.target -Quiet -Count 1))
+        {
+            [Helper]::SetColour('DarkYellow')
+            [console]::WriteLine([string]::Format("{0} Host {1} is unreachable, skipping...", $(Timestamp), $this.target))
+            [Helper]::Reset()
+            throw()
+        }
 
         # Regular expression to check to see if target format matches IP address
         if($this.target -match "^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$")
@@ -323,13 +331,13 @@ function Main()
     }
 
     # these logic statements ensure correct param combinations are supplied on the command line switches
-    if( ! ($target) -and ! ($target_list))
+    if( ! ($target) -and ! ($targetlist))
     {
         [console]::WriteLine([string]::Format("{0} Please provide a target or a target list using the '-target' or '-targetlist' switches respectively",$(Timestamp)))
         [Helper]::Reset()
         exit
     }
-    elseif($target -and $target_list)
+    elseif($target -and $targetlist)
     {
         [console]::WriteLine([string]::Format("{0} Target must be a single host or a path to a host file, not both",$(Timestamp)))
         [Helper]::Reset()
@@ -386,50 +394,69 @@ function Main()
 
     [Helper]::Reset()
 
-    # create SessionHandler object
-    [SessionHandler]$session = [SessionHandler]::new($target, $psexec, $installfiles)
-
-    if($encrypt)
+    # if single target is found append the target as the only element in a list, that way the loop can iterate through even though its only one element. Less code. 
+    if($targetlist)
     {
-        [console]::WriteLine([string]::Format("{0} TPM visibility is '{1}' on target {2}",$(Timestamp),$session.tpm_on,$session.target))
+        [array] $targets = Get-Content $targetlist
+    }
+    elseif($target)
+    {
+        [array] $targets += $target
+    }
 
-        # If TPM is not on proceed with script
-        if( ! ($session.tpm_on))
+    foreach($tar in $targets)
+    {
+        
+        # create SessionHandler object
+        try
         {
-            [console]::WriteLine([string]::Format("{0} Attempting TPM activation",$(Timestamp)))
-
-            # Run session methods to initiate TPM activation process
-            $session.TransferFiles()
-            $session.EnableTPM($biospass)
-            [Helper]::SetColour("DarkGreen")
-            [console]::WriteLine([string]::Format("{0} Process has finished successfully on {1}",$(Timestamp),$session.target))
-            [Helper]::Reset()   
+            [SessionHandler]$session = [SessionHandler]::new($tar, $psexec, $installfiles)
         }
-        # if tpm is visible check if its active too
-        elseif($session.tpm_on)
+        catch{continue}
+
+        if($encrypt)
         {
-            if( ! ($session.tpm_active))
+            [console]::WriteLine([string]::Format("{0} TPM visibility is '{1}' on target {2}",$(Timestamp),$session.tpm_on,$session.target))
+    
+            # If TPM is not on proceed with script
+            if( ! ($session.tpm_on))
             {
-                [Helper]::SetColour("DarkYellow")
-                [console]::WriteLine([string]::Format("{0} TPM status is on but not provisioned",$(Timestamp)))
+                [console]::WriteLine([string]::Format("{0} Attempting TPM activation",$(Timestamp)))
+    
+                # Run session methods to initiate TPM activation process
+                $session.TransferFiles()
+                $session.EnableTPM($biospass)
+                [Helper]::SetColour("DarkGreen")
+                [console]::WriteLine([string]::Format("{0} Process has finished successfully on {1}",$(Timestamp),$session.target))
                 [Helper]::Reset()   
             }
-            elseif($session.tpm_active)
-            {    
-                [Helper]::SetColour("DarkGreen")        
-                [console]::WriteLine([string]::Format("{0} TPM status is on and compliant, skipping...",$(Timestamp)))
-                [Helper]::Reset()   
+            # if tpm is visible check if its active too
+            elseif($session.tpm_on)
+            {
+                if( ! ($session.tpm_active))
+                {
+                    [Helper]::SetColour("DarkYellow")
+                    [console]::WriteLine([string]::Format("{0} TPM status is on but not provisioned",$(Timestamp)))
+                    [Helper]::Reset()   
+                }
+                elseif($session.tpm_active)
+                {    
+                    [Helper]::SetColour("DarkGreen")        
+                    [console]::WriteLine([string]::Format("{0} TPM status is on and compliant, skipping...",$(Timestamp)))
+                    [Helper]::Reset()   
+                }
             }
         }
+    
+        # Report switch only generated report with object
+        elseif($report)
+        {
+            FormatReport($session)
+        }
+    
+        [Helper]::Reset()
     }
 
-    # Report switch only generated report with object
-    elseif($report)
-    {
-        FormatReport($session)
-    }
-
-    [Helper]::Reset()
 }
 
 Main
