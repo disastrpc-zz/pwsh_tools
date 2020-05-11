@@ -9,7 +9,9 @@ param([string]$target,
 [string]$targetlist,
 [switch]$report,
 [switch]$encrypt,
-[string]$biospass)
+[string]$biospass,
+[string]$psexec,
+[string]$installfiles)
 
 $VER = '1.0'
 $helper = [Helper]::new()
@@ -44,6 +46,9 @@ class SessionHandler
     [string]$ipv4
     [string]$hostname
     [string]$model
+    [string]$psexec
+    [string]$installfiles
+    [string]$install_filename
     [bool]$encryption_status
     [bool]$tpm_on
     [bool]$tpm_status
@@ -51,9 +56,12 @@ class SessionHandler
     [Helper]$global:helper = [Helper]::new()
 
     # Constructor attempts to gather information about the target on creation, this means that each SessionHandler object will already know everything it needs before starting operations.
-    SessionHandler([string]$target)
+    SessionHandler([string]$target, [string]$psexec, [string]$installfiles)
     {
-        $this.target = $target
+        [string] $this.target = $target
+        [string] $this.psexec = $psexec
+        [string] $this.installfiles = $installfiles
+        [string]$this.install_filename = Split-Path $this.installationpath -leaf
 
         [console]::WriteLine([string]::Format("{0} Gathering information for {1}...", $(Timestamp), $this.target))
 
@@ -63,7 +71,7 @@ class SessionHandler
             [console]::WriteLine([string]::Format("{0} IP Address detected, resolving hostname for {1}...", $(Timestamp), $this.target))
 
             # Gather hostname by invoking 'hostname' command
-            $this.hostname = .\PsExec.exe -accepteula -nobanner "\\$($this.target)" hostname 2>$null
+            $this.hostname = & "$($this.psexec)" -accepteula -nobanner "\\$($this.target)" hostname 2>$null
             $this.ipv4 = $target
         }
         else
@@ -78,8 +86,8 @@ class SessionHandler
         $this.tpm_on = $this.GetTPMPresence()
         $this.tpm_status = $this.GetTPMActivation()
 
-        # invoke WIMIC to gather model 
-        $model_arr = $(.\PsExec.exe -accepteula -nobanner "\\$($this.target)" cmd /c wmic computersystem get model 2>$null).trim()
+        # invoke WMIC to gather model 
+        $model_arr = $(& "$($this.psexec)" -accepteula -nobanner "\\$($this.target)" cmd /c wmic computersystem get model 2>$null).trim()
         $this.model = $model_arr[2]
 
         # Builds UNC path to C$ share
@@ -90,7 +98,7 @@ class SessionHandler
     hidden [string] BuildTargetPath()
     {
         $t1 = "\\$($this.target)\"
-        $t2 = '\C$\Temp'
+        $t2 = '\C$\Temp\'
         $path = Join-Path $t1 $t2
 
         return $path
@@ -102,9 +110,9 @@ class SessionHandler
         [console]::WriteLine([string]::Format("{0} Transferring 'ddc.zip' to {1}...",$(Timestamp),$this.target))
 
         # xcopy zip file over
-        xcopy dcc.zip $this.target_path /i /y
+        xcopy $this.installfiles $this.target_path /i /y
         # then invoke powershell's expand-archive cmdlet to extract
-        .\PsExec.exe "\\$($this.target)" powershell Expand-Archive -Path "$($this.target_path)\dcc.zip" -DestinationPath "$($this.target_path)\dcc\" 2>$null
+        & "$($this.psexec)" "\\$($this.target)" powershell Expand-Archive -Path "$($this.target_path)$($this.install_filename)" -DestinationPath "$($this.target_path)\dcc\" 2>$null
         if($LASTEXITCODE -ne 0){[Helper]::SetColour('DarkRed'); [console]::WriteLine([string]::Format("{0} Error extracting files. Code: {1}",$(Timestamp), $LASTEXITCODE)); [Helper]::Reset(); exit}
 
 
@@ -116,7 +124,7 @@ class SessionHandler
         [console]::WriteLine([string]::Format("{0} Running installer at '{1}\dcc\Command_Configure.msi'",$(Timestamp),$this.target_path))
 
         # Execute .msi installer 
-        .\PsExec.exe "\\$($this.target)" cmd /c msiexec /i "$($this.target_path)\dcc\Command_Configure.msi" /passive /qn 2>$null
+        & "$($this.psexec)" "\\$($this.target)" cmd /c msiexec /i "$($this.target_path)\dcc\Command_Configure.msi" /passive /qn 2>$null
         if($LASTEXITCODE -eq 0)
         {
             [Helper]::SetColour('DarkGreen');
@@ -135,7 +143,7 @@ class SessionHandler
     # GetTPMPresence() and GetTPMActivaton() both invoke the get-tpm cmdlet on the target system and format the output to include the presence and status information only
     [bool] GetTPMPresence()
     {
-        $query = $(.\PsExec.exe "\\$($this.target)" powershell get-tpm | findstr "TpmPresent" 2>$null).split(":")
+        $query = $(& "$($this.psexec)" "\\$($this.target)" powershell get-tpm | findstr "TpmPresent" 2>$null).split(":")
         if($LASTEXITCODE -ne 0){[Helper]::SetColour('DarkRed'); [console]::WriteLine([string]::Format("{0} Error getting status. Code: {1}",$(Timestamp), $LASTEXITCODE)); [Helper]::Reset(); exit}
         if($query[1].trim() -eq 'true')
         {
@@ -149,7 +157,7 @@ class SessionHandler
 
     [bool] GetTPMActivation()
     {
-        $query = $(.\PsExec.exe "\\$($this.target)" powershell get-tpm | findstr "TpmReady" 2>$null).split(":")
+        $query = $(& "$($this.psexec)" "\\$($this.target)" powershell get-tpm | findstr "TpmReady" 2>$null).split(":")
         if($LASTEXITCODE -ne 0){[Helper]::SetColour('DarkRed'); [console]::WriteLine([string]::Format("{0} Error getting status. Code: {1}",$(Timestamp), $LASTEXITCODE)); [Helper]::Reset(); exit}
 
         if($query[1].trim() -eq 'true')
@@ -192,7 +200,7 @@ class SessionHandler
         [console]::WriteLine([string]::Format("{0} Setting administrator password...",$(Timestamp)))
 
         # invoke cctk.exe to attempt to set BIOS password
-        .\PsExec.exe "\\$($this.target)" "C:\Program Files (x86)\Dell\Command Configure\X86_64\cctk.exe" "--setuppwd=$bpass" 2>$null
+        & "$($this.psexec)" "\\$($this.target)" "C:\Program Files (x86)\Dell\Command Configure\X86_64\cctk.exe" "--setuppwd=$bpass" 2>$null
         if($LASTEXITCODE -eq 0)
         {
             [Helper]::SetColour('DarkGreen');
@@ -218,7 +226,7 @@ class SessionHandler
         [console]::WriteLine([string]::Format("{0} Attempting to enable TPM chip...",$(Timestamp)))
 
         # Invoke cctk.exe with the --tpm=on and the user supplied BIOS password
-        .\PsExec.exe "\\$($this.target)" cmd /c "C:\Program Files (x86)\Dell\Command Configure\X86_64\cctk.exe" "--tpm=on" "--valsetuppwd=$bpass" 2>$null
+        & "$($this.psexec)" "\\$($this.target)" cmd /c "C:\Program Files (x86)\Dell\Command Configure\X86_64\cctk.exe" "--tpm=on" "--valsetuppwd=$bpass" 2>$null
         if($LASTEXITCODE -eq 0)
         {
             [Helper]::SetColour('DarkGreen');
@@ -236,7 +244,7 @@ class SessionHandler
         [console]::WriteLine([string]::Format("{0} Attempting to provision TPM chip...",$(Timestamp)))
 
         # Invoke cctk.exe with the --tpmactivation=activate switch to activate chip
-        .\PsExec.exe "\\$($this.target)" "C:\Program Files (x86)\Dell\Command Configure\X86_64\cctk.exe" "--tpmactivation=activate" "--valsetuppwd=$bpass" 2>$null
+        & "$($this.psexec)" "\\$($this.target)" "C:\Program Files (x86)\Dell\Command Configure\X86_64\cctk.exe" "--tpmactivation=activate" "--valsetuppwd=$bpass" 2>$null
         if($LASTEXITCODE -eq 0)
         {
             [Helper]::SetColour('DarkGreen');
@@ -253,16 +261,16 @@ class SessionHandler
 
         # Clean up after myself
         [console]::WriteLine([string]::Format("{0} Cleaning up...",$(Timestamp)))
-        .\PsExec.exe "\\$($this.target)" cmd /c del /F /Q "$($this.target_path)\dcc.zip" 2>$null
-        if($LASTEXITCODE -ne 0){[Helper]::SetColour('DarkYellow'); [console]::WriteLine([string]::Format("{0} Unable to clean up 'dcc.zip'. Code: {1}",$(Timestamp), $LASTEXITCODE)); [Helper]::Reset(); exit}
-        .\PsExec.exe "\\$($this.target)" cmd /c del /F /Q /s "$($this.target_path)\dcc\" 2>$null
-        if($LASTEXITCODE -ne 0){[Helper]::SetColour('DarkYellow'); [console]::WriteLine([string]::Format("{0} Unable to clean up '\dcc\'. Code: {1}",$(Timestamp), $LASTEXITCODE)); [Helper]::Reset(); exit}
-        .\PsExec.exe "\\$($this.target)" cmd /c del /F /Q /s "C:\Program Files (x86)\Dell\Command Configure\" 2>$null
+        & "$($this.psexec)" "\\$($this.target)" cmd /c del /F /Q "$($this.target_path)$($this.install_filename)" 2>$null
+        if($LASTEXITCODE -ne 0){[Helper]::SetColour('DarkYellow'); [console]::WriteLine([string]::Format("{0} Unable to clean up installation files. Code: {1}",$(Timestamp), $LASTEXITCODE)); [Helper]::Reset(); exit}
+        & "$($this.psexec)" "\\$($this.target)" cmd /c del /F /Q /s "$($this.target_path)\dcc\" 2>$null
+        if($LASTEXITCODE -ne 0){[Helper]::SetColour('DarkYellow'); [console]::WriteLine([string]::Format("{0} Unable to clean up '\dcc\' folder. Code: {1}",$(Timestamp), $LASTEXITCODE)); [Helper]::Reset(); exit}
+        & "$($this.psexec)" "\\$($this.target)" cmd /c del /F /Q /s "C:\Program Files (x86)\Dell\Command Configure\" 2>$null
         if($LASTEXITCODE -ne 0){[Helper]::SetColour('DarkYellow'); [console]::WriteLine([string]::Format("{0} Unable to clean up 'Command and Configure'. Code: {1}",$(Timestamp), $LASTEXITCODE)); [Helper]::Reset(); exit}
 
         # Attempt to reboot system and wait for it to restart
         [console]::WriteLine([string]::Format("{0} Rebooting system... ",$(Timestamp)))
-        .\PsExec.exe "\\$($this.target)" cmd /c shutdown /r /t 0 2>$null
+        & "$($this.psexec)" "\\$($this.target)" cmd /c shutdown /r /t 0 2>$null
         $this.WaitForRestart()
         [console]::WriteLine([string]::Format("{0} {1} reboot successful",$(Timestamp),$this.target))
     }
@@ -348,18 +356,30 @@ function Main()
     }
 
     [Helper]::Reset()
+
+    # look for PSExec in local directory if now specified
+    if( ! ($psexec))
+    {
+        $psexec = '.\PsExec.exe'
+    }
+
+    if(! ($installfiles))
+    {
+        $installfiles = "$PSScriptRoot\dcc.zip"
+    }
+
     [Helper]::SetColour("DarkRed")
 
-    # Check for PSExec and the dcc.zip file containing Dell Command and Configure
-    if( ! (Test-Path -Path "$PSScriptRoot\PsExec.exe"))
+    # Check for PSExec and the installation file containing Dell Command and Configure
+    if( ! (Test-Path -Path "$psexec"))
     {
-        [console]::WriteLine([string]::Format("{0} PSExec is not found. Please ensure the 'PsExec.exe' executable is in the same directory as the script and named accordingly",$(Timestamp)))
+        [console]::WriteLine([string]::Format("{0} PSExec is not found. Please ensure path '{1}' is correct",$(Timestamp),$psexec))
         [Helper]::Reset()
         exit
     }
-    if( ! (Test-Path -Path "$PSScriptRoot\dcc.zip"))
+    if( ! (Test-Path -Path "$installfiles"))
     {
-        [console]::WriteLine([string]::Format("{0} Missing installation files. Please ensure the 'dcc.zip' file is in the same directory as the script and named accordingly",$(Timestamp)))
+        [console]::WriteLine([string]::Format("{0} Missing installation files. Ensure path '{1}' is correct",$(Timestamp),$installfiles))
         [Helper]::Reset()
         exit
     }
@@ -367,7 +387,7 @@ function Main()
     [Helper]::Reset()
 
     # create SessionHandler object
-    [SessionHandler]$session = [SessionHandler]::new($target)
+    [SessionHandler]$session = [SessionHandler]::new($target, $psexec, $installfiles)
 
     if($encrypt)
     {
