@@ -3,15 +3,18 @@
 # This tool uses PsExec and Dell Command and Configure to perform various operations on remote systems 
 # involving TPM activation and Bitlocker encryption.
 # Source code: https://github.com/disastrpc/encryption_tools/
+# TODO:
+# Better logic to determine which computers have TPM chips. Right now the script is tailored to the Optiplex series but can be easily modified for other models. 
 
 # Takes params from the script invocation
 param([string]$target,
 [string]$targetlist,
 [switch]$report,
-[switch]$encrypt,
+[switch]$tpmon,
 [string]$biospass,
 [string]$psexec,
-[string]$installfiles)
+[string]$installfiles,
+[string]$output)
 
 $VER = '1.0'
 $helper = [Helper]::new()
@@ -48,9 +51,12 @@ class SessionHandler
     [string] $psexec
     [string] $installfiles
     [string] $install_filename
-    [bool] $encryption_status
+    [string] $encryption_status
     [bool] $tpm_on
     [bool] $tpm_status
+    [bool] $online
+    [bool] $failed
+    [bool] $failed_clean
 
     [Helper]$global:helper = [Helper]::new()
 
@@ -62,6 +68,9 @@ class SessionHandler
         [string] $this.installfiles = $installfiles
         [string] $this.install_filename = Split-Path $this.installfiles -leaf
 
+        # Had to hack this string to pieces in order to get the status to display nicely. Status ends up falling on index 4 after trimming and splitting the string. Lets see how this holds up.
+        [string] $this.encryption_status = (& "$($this.psexec)" -accepteula -nobanner "\\$($this.target)" powershell.exe 'Get-BitLockerVolume -MountPoint "C:" | Select VolumeStatus'2>$null).split('------------').trim()[4]
+
         [console]::WriteLine([string]::Format("{0} Gathering information for {1}...", $(Timestamp), $this.target))
 
         # if unable to connect throw connection error to be caught by the Main function
@@ -70,7 +79,12 @@ class SessionHandler
             [Helper]::SetColour('DarkYellow')
             [console]::WriteLine([string]::Format("{0} Host {1} is unreachable, skipping...", $(Timestamp), $this.target))
             [Helper]::Reset()
-            throw()
+            $this.online = $false
+            throw "Host unreachable"
+        }
+        else
+        {
+            $this.online = $true
         }
 
         # Regular expression to check to see if target format matches IP address
@@ -121,18 +135,18 @@ class SessionHandler
         xcopy $this.installfiles $this.target_path /i /y
         # then invoke powershell's expand-archive cmdlet to extract
         & "$($this.psexec)" "\\$($this.target)" powershell Expand-Archive -Path "$($this.target_path)$($this.install_filename)" -DestinationPath "$($this.target_path)\dcc\" 2>$null
-        if($LASTEXITCODE -ne 0){[Helper]::SetColour('DarkRed'); [console]::WriteLine([string]::Format("{0} Error extracting files. Code: {1}",$(Timestamp), $LASTEXITCODE)); [Helper]::Reset(); exit}
+        if($LASTEXITCODE -ne 0){[Helper]::SetColour('DarkRed'); [console]::WriteLine([string]::Format("{0} Error extracting files. Code: {1}",$(Timestamp), $LASTEXITCODE)); [Helper]::Reset();  $this.failed = $true; continue}
 
 
        
         [Helper]::SetColour("DarkGreen")
-        [console]::WriteLine([string]::Format("{0} File transfer, extraction and cleanup complete", $(Timestamp)))
+        [console]::WriteLine([string]::Format("{0} File transfer and extraction complete", $(Timestamp)))
         [Helper]::Reset()
 
-        [console]::WriteLine([string]::Format("{0} Running installer at '{1}\dcc\Command_Configure.msi'",$(Timestamp),$this.target_path))
+        [console]::WriteLine([string]::Format("{0} Running installer at '{1}dcc\Command_Configure.msi'",$(Timestamp),$this.target_path))
 
         # Execute .msi installer 
-        & "$($this.psexec)" "\\$($this.target)" cmd /c msiexec /i "$($this.target_path)\dcc\Command_Configure.msi" /passive /qn 2>$null
+        & "$($this.psexec)" "\\$($this.target)" cmd /c msiexec /i "$($this.target_path)dcc\Command_Configure.msi" /passive /qn 2>$null
         if($LASTEXITCODE -eq 0)
         {
             [Helper]::SetColour('DarkGreen');
@@ -144,37 +158,7 @@ class SessionHandler
             [Helper]::SetColour("DarkRed")
             [console]::WriteLine([string]::Format("{0} Error running installer, error code: {1}",$(Timestamp), $LastExitCode))
             [Helper]::Reset()
-            exit
-        }
-    }
-
-    # GetTPMPresence() and GetTPMActivaton() both invoke the get-tpm cmdlet on the target system and format the output to include the presence and status information only
-    [bool] GetTPMPresence()
-    {
-        $query = $(& "$($this.psexec)" "\\$($this.target)" powershell get-tpm | findstr "TpmPresent" 2>$null).split(":")
-        if($LASTEXITCODE -ne 0){[Helper]::SetColour('DarkRed'); [console]::WriteLine([string]::Format("{0} Error getting status. Code: {1}",$(Timestamp), $LASTEXITCODE)); [Helper]::Reset(); exit}
-        if($query[1].trim() -eq 'true')
-        {
-            return $true
-        }
-        else
-        {
-            return $false
-        }
-    }
-
-    [bool] GetTPMActivation()
-    {
-        $query = $(& "$($this.psexec)" "\\$($this.target)" powershell get-tpm | findstr "TpmReady" 2>$null).split(":")
-        if($LASTEXITCODE -ne 0){[Helper]::SetColour('DarkRed'); [console]::WriteLine([string]::Format("{0} Error getting status. Code: {1}",$(Timestamp), $LASTEXITCODE)); [Helper]::Reset(); exit}
-
-        if($query[1].trim() -eq 'true')
-        {
-            return $true
-        }
-        else
-        {
-            return $false
+            $this.failed = $true; continue
         }
     }
 
@@ -226,9 +210,9 @@ class SessionHandler
         else
         {
             [Helper]::SetColour("DarkRed")
-            [console]::WriteLine([string]::Format("{0} Error running installer, error code: {1}",$(Timestamp), $LastExitCode))
+            [console]::WriteLine([string]::Format("{0} Error setting BIOS password. Code: {1}",$(Timestamp), $LastExitCode))
             [Helper]::Reset()
-            exit
+            $this.failed = $true; continue
         }
 
         [console]::WriteLine([string]::Format("{0} Attempting to enable TPM chip...",$(Timestamp)))
@@ -244,9 +228,9 @@ class SessionHandler
         else
         {
             [Helper]::SetColour("DarkRed"); 
-            [console]::WriteLine([string]::Format("{0} Error running installer, error code: {1}",$(Timestamp), $LastExitCode))
+            [console]::WriteLine([string]::Format("{0} Error activating TPM chip. Code: {1}",$(Timestamp), $LastExitCode))
             [Helper]::Reset();
-            exit
+            $this.failed = $true; continue
         }
 
         [console]::WriteLine([string]::Format("{0} Attempting to provision TPM chip...",$(Timestamp)))
@@ -262,25 +246,57 @@ class SessionHandler
         else
         {
             [Helper]::SetColour("DarkRed"); 
-            [console]::WriteLine([string]::Format("{0} Error activating TPM, error code: {1}",$(Timestamp), $LastExitCode))
+            [console]::WriteLine([string]::Format("{0} Error provisioning TPM. Code: {1}",$(Timestamp), $LastExitCode))
             [Helper]::Reset()
-            exit
+            $this.failed = $true; continue
         }
 
         # Clean up after myself
         [console]::WriteLine([string]::Format("{0} Cleaning up...",$(Timestamp)))
         & "$($this.psexec)" "\\$($this.target)" cmd /c del /F /Q "$($this.target_path)$($this.install_filename)" 2>$null
-        if($LASTEXITCODE -ne 0){[Helper]::SetColour('DarkYellow'); [console]::WriteLine([string]::Format("{0} Unable to clean up installation files. Code: {1}",$(Timestamp), $LASTEXITCODE)); [Helper]::Reset(); exit}
+        if($LASTEXITCODE -ne 0){[Helper]::SetColour('DarkYellow'); [console]::WriteLine([string]::Format("{0} Unable to clean up installation files. Code: {1}",$(Timestamp), $LASTEXITCODE)); [Helper]::Reset(); $this.failed_clean = $true; continue}
         & "$($this.psexec)" "\\$($this.target)" cmd /c del /F /Q /s "$($this.target_path)\dcc\" 2>$null
-        if($LASTEXITCODE -ne 0){[Helper]::SetColour('DarkYellow'); [console]::WriteLine([string]::Format("{0} Unable to clean up '\dcc\' folder. Code: {1}",$(Timestamp), $LASTEXITCODE)); [Helper]::Reset(); exit}
+        if($LASTEXITCODE -ne 0){[Helper]::SetColour('DarkYellow'); [console]::WriteLine([string]::Format("{0} Unable to clean up '\dcc\' folder. Code: {1}",$(Timestamp), $LASTEXITCODE)); [Helper]::Reset(); $this.failed_clean = $true; continue}
         & "$($this.psexec)" "\\$($this.target)" cmd /c del /F /Q /s "C:\Program Files (x86)\Dell\Command Configure\" 2>$null
-        if($LASTEXITCODE -ne 0){[Helper]::SetColour('DarkYellow'); [console]::WriteLine([string]::Format("{0} Unable to clean up 'Command and Configure'. Code: {1}",$(Timestamp), $LASTEXITCODE)); [Helper]::Reset(); exit}
+        if($LASTEXITCODE -ne 0){[Helper]::SetColour('DarkYellow'); [console]::WriteLine([string]::Format("{0} Unable to clean up 'Command and Configure'. Code: {1}",$(Timestamp), $LASTEXITCODE)); [Helper]::Reset(); $this.failed_clean = $true; continue}
 
         # Attempt to reboot system and wait for it to restart
         [console]::WriteLine([string]::Format("{0} Rebooting system... ",$(Timestamp)))
         & "$($this.psexec)" "\\$($this.target)" cmd /c shutdown /r /t 0 2>$null
         $this.WaitForRestart()
         [console]::WriteLine([string]::Format("{0} {1} reboot successful",$(Timestamp),$this.target))
+
+        $this.tpm_on = $true
+        $this.tpm_status = $true
+    }
+    # GetTPMPresence() and GetTPMActivaton() both invoke the get-tpm cmdlet on the target system and format the output to include the presence and status information only
+    [bool] GetTPMPresence()
+    {
+        $query = $(& "$($this.psexec)" "\\$($this.target)" powershell get-tpm | findstr "TpmPresent" 2>$null).split(":")
+        if($LASTEXITCODE -ne 0){[Helper]::SetColour('DarkRed'); [console]::WriteLine([string]::Format("{0} Error getting status. Code: {1}",$(Timestamp), $LASTEXITCODE)); [Helper]::Reset();  continue}
+        if($query[1].trim() -eq 'true')
+        {
+            return $true
+        }
+        else
+        {
+            return $false
+        }
+    }
+
+    [bool] GetTPMActivation()
+    {
+        $query = $(& "$($this.psexec)" "\\$($this.target)" powershell get-tpm | findstr "TpmReady" 2>$null).split(":")
+        if($LASTEXITCODE -ne 0){[Helper]::SetColour('DarkRed'); [console]::WriteLine([string]::Format("{0} Error getting status. Code: {1}",$(Timestamp), $LASTEXITCODE)); [Helper]::Reset();  continue}
+
+        if($query[1].trim() -eq 'true')
+        {
+            return $true
+        }
+        else
+        {   
+            return $false
+        }
     }
 
 }
@@ -300,19 +316,56 @@ function FormatReport([SessionHandler]$session)
     if($session.tpm_on){[string] $tpm_on = 'True'} else {$tpm_on = 'False'}
     if($session.tpm_status){[string] $tpm_active = 'True'} else {$tpm_active = 'False'}
 
-    [console]::WriteLine([string]::Format("{0} Hostname:`t`t`t{1}`n{0} IPv4:`t`t`t{2}`n{0} Model:`t`t`t{3}`n{0} TPM On:`t`t`t{4}`n{0} TPM Active:`t`t{5}",
+    [console]::WriteLine([string]::Format("{0} Hostname:`t`t`t{1}`n{0} IPv4:`t`t`t{2}`n{0} Model:`t`t`t{3}`n{0} TPM On:`t`t`t{4}`n{0} TPM Active:`t`t{5}`n{0} Encryption Status:`t{6}",
                                         $(Timestamp),
                                         $session.hostname,
                                         $session.ipv4,
                                         $session.model,
                                         $tpm_on,
-                                        $tpm_active))
+                                        $tpm_active,
+                                        $session.encryption_status))
+}
+
+# Formats text and outputs to a file at $path location
+function FormatReportFile([SessionHandler]$session, [string]$path)
+{
+
+    if($session.online)
+    {
+        if($session.tpm_on){[string] $tpm_on = 'True'} else {$tpm_on = 'False'}
+        if($session.tpm_status){[string] $tpm_active = 'True'} else {$tpm_active = 'False'}
+        
+        [console]::WriteLine([string]::Format("{0} Writing report file", $(Timestamp)))
+        [hashtable]$report = [ordered]@{
+            Timestamp = $(Timestamp)
+            Hostname = $($session.Hostname)
+            IPv4 = $($session.ipv4)
+            Model = $($session.model)
+            TPMOn = $tpm_on
+            TPMActive = $tpm_active
+            CryptStatus = $($session.encryption_status)
+        }
+    }
+    elseif( ! ($session.online))
+    {
+        [hashtable]$report = [ordered]@{
+            Timestamp = $(Timestamp)
+            Hostname = $($session.target)
+            IPv4 = 'UNREACHABLE'
+            Model = 'UNREACHABLE'
+            TPMOn = 'UNREACHABLE'
+            TPMActive = 'UNREACHABLE'
+            CryptStatus = 'UNREACHABLE'
+        }
+    }
+    
+    [PsCustomObject] $report | Select-Object -Property Timestamp,Hostname,IPv4,Model,TPMOn,TPMActive,CryptStatus | Export-Csv -Path $output -Append
 }
 
 # Main function handles program flow
 function Main()
 {
-    if($encrypt){$mode = 'encryption'}
+    if($tpmon){$mode = 'TPM activation'}
     elseif($report){$mode = 'reporting'}
 
     [Helper]::SetColour("DarkYellow")
@@ -344,19 +397,19 @@ function Main()
         exit
     }
 
-    if( ! ($report) -and ! ($encrypt))
+    if( ! ($report) -and ! ($tpmon))
     {
-        [console]::WriteLine([string]::Format("{0} Please specify an action using the '-encrypt' or '-report' switches",$(Timestamp)))
+        [console]::WriteLine([string]::Format("{0} Please specify an action using the '-tpmon' or '-report' switches",$(Timestamp)))
         [Helper]::Reset()
         exit
     }
-    elseif($report -and $encrypt)
+    elseif($report -and $tpmon)
     {
         [console]::WriteLine([string]::Format("{0} Only one action is allowed per invocation",$(Timestamp)))
         [Helper]::Reset()
         exit
     }
-    elseif($encrypt -and ! ($biospass))
+    elseif($tpmon -and ! ($biospass))
     {
         [console]::WriteLine([string]::Format("{0} BIOS password must be supplied, re-run script using the '-biospass' switch",$(Timestamp)))
         [Helper]::Reset()
@@ -406,56 +459,91 @@ function Main()
 
     foreach($tar in $targets)
     {
-        
+       
         # create SessionHandler object
         try
         {
             [SessionHandler]$session = [SessionHandler]::new($tar, $psexec, $installfiles)
         }
-        catch{continue}
+        catch{}
 
-        if($encrypt)
+        if($tpmon)
         {
-            [console]::WriteLine([string]::Format("{0} TPM visibility is '{1}' on target {2}",$(Timestamp),$session.tpm_on,$session.target))
-    
-            # If TPM is not on proceed with script
-            if( ! ($session.tpm_on))
+
+            [int] $model_no = ($session.model).split(' ')[1]
+
+            if($model_no -ge 3020)
             {
-                [console]::WriteLine([string]::Format("{0} Attempting TPM activation",$(Timestamp)))
-    
-                # Run session methods to initiate TPM activation process
-                $session.TransferFiles()
-                $session.EnableTPM($biospass)
-                [Helper]::SetColour("DarkGreen")
-                [console]::WriteLine([string]::Format("{0} Process has finished successfully on {1}",$(Timestamp),$session.target))
+                [console]::WriteLine([string]::Format("{0} TPM visibility is '{1}' on target {2}",$(Timestamp),$session.tpm_on,$session.target))
+
+                # If TPM is not on proceed with script
+                if( ! ($session.tpm_on))
+                {
+                    [console]::WriteLine([string]::Format("{0} Attempting TPM activation",$(Timestamp)))
+        
+                    # Run session methods to initiate TPM activation process
+                    $session.TransferFiles()
+                    $session.EnableTPM($biospass)
+                    [Helper]::SetColour("DarkGreen")
+                    [console]::WriteLine([string]::Format("{0} Process has finished successfully on {1}",$(Timestamp),$session.target))
+                    [Helper]::Reset()   
+                }
+                # if tpm is visible check if its active too
+                elseif($session.tpm_on)
+                {
+                    if( ! ($session.tpm_status))
+                    {
+                        [Helper]::SetColour("DarkYellow")
+                        [console]::WriteLine([string]::Format("{0} TPM status is on but not provisioned",$(Timestamp)))
+                        [Helper]::Reset()   
+                    }
+                    elseif($session.tpm_status)
+                    {    
+                        [Helper]::SetColour("DarkGreen")        
+                        [console]::WriteLine([string]::Format("{0} TPM status is on and compliant, skipping...",$(Timestamp)))
+                        [Helper]::Reset()   
+                    }
+                }
+
+                if( ! ($output))
+                {
+                    $ts = $(Timestamp).replace('[','').replace(']','').replace(' ','')
+                    [string] $output = ".\$ts.csv"
+                }
+
+                FormatReportFile $session $output
+
+            }
+            else
+            {
+                [Helper]::SetColour("DarkYellow")  
+                [console]::WriteLine([string]::Format("{0} Model {1} not supported, skipping...",$(Timestamp),$model_no))
                 [Helper]::Reset()   
             }
-            # if tpm is visible check if its active too
-            elseif($session.tpm_on)
-            {
-                if( ! ($session.tpm_active))
-                {
-                    [Helper]::SetColour("DarkYellow")
-                    [console]::WriteLine([string]::Format("{0} TPM status is on but not provisioned",$(Timestamp)))
-                    [Helper]::Reset()   
-                }
-                elseif($session.tpm_active)
-                {    
-                    [Helper]::SetColour("DarkGreen")        
-                    [console]::WriteLine([string]::Format("{0} TPM status is on and compliant, skipping...",$(Timestamp)))
-                    [Helper]::Reset()   
-                }
-            }
+
         }
+
+    
     
         # Report switch only generated report with object
         elseif($report)
         {
-            FormatReport($session)
-        }
-    
+            [console]::WriteLine([string]::Format("{0} Generating report for {1}",$(Timestamp),$tar))
+            if($output)
+            {
+                FormatReportFile $session $output
+            }
+            else
+            {
+                FormatReport $session
+            }
+               
         [Helper]::Reset()
+
+        }
     }
+
+    [console]::WriteLine([string]::Format("{0} Report file written to {1}", $(Timestamp),$output))
 
 }
 
