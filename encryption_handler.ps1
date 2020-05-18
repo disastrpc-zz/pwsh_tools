@@ -327,7 +327,7 @@ function FormatReport([SessionHandler]$session)
 }
 
 # Formats text and outputs to a file at $path location
-function FormatReportFile([SessionHandler]$session, [string]$path)
+function FormatReportFile([SessionHandler]$session, [string]$path, $tar)
 {
 
     if($session.online)
@@ -350,7 +350,7 @@ function FormatReportFile([SessionHandler]$session, [string]$path)
     {
         [hashtable]$report = [ordered]@{
             Timestamp = $(Timestamp)
-            Hostname = $($session.target)
+            Hostname = $tar
             IPv4 = 'UNREACHABLE'
             Model = 'UNREACHABLE'
             TPMOn = 'UNREACHABLE'
@@ -459,7 +459,6 @@ function Main()
 
     foreach($tar in $targets)
     {
-       
         # create SessionHandler object
         try
         {
@@ -469,8 +468,14 @@ function Main()
 
         if($tpmon)
         {
-
-            [int] $model_no = ($session.model).split(' ')[1]
+            try
+            {
+                [int] $model_no = ($session.model).split(' ')[1]
+            } 
+            catch
+            {               
+                $model_no = 0
+            }
 
             if($model_no -ge 3020)
             {
@@ -501,7 +506,8 @@ function Main()
                     {    
                         [Helper]::SetColour("DarkGreen")        
                         [console]::WriteLine([string]::Format("{0} TPM status is on and compliant, skipping...",$(Timestamp)))
-                        [Helper]::Reset()   
+                        [Helper]::Reset()  
+                        continue 
                     }
                 }
 
@@ -514,11 +520,17 @@ function Main()
                 FormatReportFile $session $output
 
             }
+            elseif($model_no -eq '0')
+            {
+                [Helper]::SetColour("DarkYellow")  
+                [console]::WriteLine([string]::Format("{0} Model not found, skipping...",$(Timestamp)))
+                [Helper]::Reset()  
+            }
             else
             {
                 [Helper]::SetColour("DarkYellow")  
                 [console]::WriteLine([string]::Format("{0} Model {1} not supported, skipping...",$(Timestamp),$model_no))
-                [Helper]::Reset()   
+                [Helper]::Reset()  
             }
 
         }
@@ -531,7 +543,7 @@ function Main()
             [console]::WriteLine([string]::Format("{0} Generating report for {1}",$(Timestamp),$tar))
             if($output)
             {
-                FormatReportFile $session $output
+                FormatReportFile $session $output $tar
             }
             else
             {
