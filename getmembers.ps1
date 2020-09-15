@@ -10,12 +10,16 @@ function GatherMemberProps($memberid)
 function GatherGroupMember($sg)
 {
     [System.Collections.ArrayList] $member_list = @()
-    foreach($member in Get-ADGroupMember -identity $sg)
+    try
     {
-       Write-Progress -ID 1 -ParentID 0 "Found member: $($member.name)"
-       $member = GatherMemberProps($member.SamAccountName)
-       $member | Add-Member -NotePropertyName 'VDISecurityGroup' -NotePropertyValue $sg && $member | Export-CSV -Path $output -Append
+        foreach($member in Get-ADGroupMember -identity $sg)
+        {
+            Write-Progress -ID 1 -ParentID 0 "Found member: $($member.name)"
+            $member = GatherMemberProps($member.SamAccountName)
+            $member | Add-Member -NotePropertyName 'VDISecurityGroup' -NotePropertyValue $sg && $member | Export-CSV -Path $output -Append
+        }
     }
+    catch{Write-Output "Unable to find group '$sg'"}
 }
 
 function Main($target, $targetlist, $output)
