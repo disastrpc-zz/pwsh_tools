@@ -7,7 +7,7 @@ function GatherMemberProps($memberid)
 {
     return Get-ADUser -Identity $memberid -Property * | Select-Object -Property SamAccountName, Name, Title, mail, department, Manager, physicalDeliveryOfficeName, Enabled
 }
-function GatherGroupMember($sg)
+function GatherGroupMembers($sg)
 {
     [System.Collections.ArrayList] $member_list = @()
     try
@@ -36,13 +36,13 @@ function Main($target, $targetlist, $output)
         foreach($sg in Get-Content $targetlist)
         {
             Write-Progress -ID -0 "Exporting members for group: $sg" 
-            GatherGroupMember($sg)
+            GatherGroupMembers($sg)
         }
     }
     elseif($target)
     {
-        Write-Progress -ID -0 "Exporting members for group: $sg" 
-        GatherGroupMember($target)
+        Write-Progress -ID -0 "Exporting members for group: $target" 
+        GatherGroupMembers($target)
     }
     
 }
