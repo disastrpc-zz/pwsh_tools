@@ -9,19 +9,35 @@ function GatherMemberProps($memberid)
 }
 function GatherGroupMember($sg)
 {
-    [System.Collections.ArrayList] $member_list = @()
     try
     {
         foreach($member in Get-ADGroupMember -identity $sg)
         {
             Write-Progress -ID 1 -ParentID 0 "Found member: $($member.name)"
             $member = GatherMemberProps($member.SamAccountName)
-            $member | Add-Member -NotePropertyName 'VDISecurityGroup' -NotePropertyValue $sg && $member | Export-CSV -Path $output -Append
+            $date_modified = ScrapeObjectMetadata $sg $member.SamAccountName
+            $member | Add-Member -NotePropertyName 'VDISecurityGroup' -NotePropertyValue $sg &&
+            $member | Add-Member -NotePropertyName 'DateModified' -NotePropertyValue $date_modified[1] &&
+            $member | Export-CSV -Path $output -Append
         }
     }
     catch{Write-Output "Unable to find group '$sg'"}
 }
 
+# Call repadmin to gather metadata containing modified time
+function ScrapeObjectMetadata($sg, $user)
+{
+    $data = (repadmin /showobjmeta $(Get-ADDomainController).Hostname (Get-ADGroup -identity $sg).DistinguishedName) |
+    Select-String -Context 0,2 "PRESENT" 
+    foreach($rep in $data)
+    {
+        if($rep -match $user -or $rep -match $(Get-ADUser -Identity $user).Name)
+        {
+            $rep -match "\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"
+            return $Matches[0]
+        }
+    }
+}
 function Main($target, $targetlist, $output)
 {
     if(! $targetlist -and ! $output -or ! $target -and ! $output)
