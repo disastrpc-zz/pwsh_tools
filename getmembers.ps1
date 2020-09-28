@@ -7,7 +7,7 @@ function GatherMemberProps($memberid)
 {
     return Get-ADUser -Identity $memberid -Property * | Select-Object -Property SamAccountName, Name, Title, mail, department, Manager, physicalDeliveryOfficeName, Enabled
 }
-function GatherGroupMembers($sg)
+function GatherGroupMember($sg)
 {
     try
     {
@@ -24,7 +24,7 @@ function GatherGroupMembers($sg)
     catch{Write-Output "Unable to find group '$sg'"}
 }
 
-# Call repadmin to gather metadata containing modified time
+# Call repadmin to gather object metadata
 function ScrapeObjectMetadata($sg, $user)
 {
     $data = (repadmin /showobjmeta $(Get-ADDomainController).Hostname (Get-ADGroup -identity $sg).DistinguishedName) |
@@ -52,13 +52,13 @@ function Main($target, $targetlist, $output)
         foreach($sg in Get-Content $targetlist)
         {
             Write-Progress -ID -0 "Exporting members for group: $sg" 
-            GatherGroupMembers($sg)
+            GatherGroupMember($sg)
         }
     }
     elseif($target)
     {
-        Write-Progress -ID -0 "Exporting members for group: $target" 
-        GatherGroupMembers($target)
+        Write-Progress -ID -0 "Exporting members for group: $sg" 
+        GatherGroupMember($target)
     }
     
 }
