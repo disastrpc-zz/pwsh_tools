@@ -31,7 +31,7 @@ This tool uses PsExec and Dell Command and Configure to perform various operatio
 
 Run report on target system:
 ```
-pwsh -executionpolicy bypass -f .\encryption_handler.ps1 -report -target 10.10.10.254
+pwsh -ep bypass -f .\encryption_handler.ps1 -report -target 10.10.10.254
 ```
 Enable TPM:
 ```
